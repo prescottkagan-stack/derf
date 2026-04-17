@@ -115,4 +115,154 @@ def render_instrument(symbol: str):
     # ── Top metrics ───────────────────────────────────────────
     m1, m2, m3, m4, m5 = st.columns(5)
     m1.metric("Last price",      f"{price:,.2f}",  f"{chg:+.2f} ({chg_pct:+.2f}%)")
-    m2.metric("Session-adj ATR"
+    m2.metric("Session-adj ATR", f"{adj_atr} pts", f"raw {atr} × {session['vol_mult']}")
+    m3.metric("VIX",             f"{vix}",          None)
+    m4.metric("IV rank",         f"{ivr}%",         "elevated" if ivr > 60 else "normal")
+    m5.metric("Rel volume",      f"{rvol}×",        "above avg" if rvol > 1.1 else "normal")
+
+    st.divider()
+
+    # ── Alerts ────────────────────────────────────────────────
+    alerts = []
+    if ivr > 60:
+        alerts.append(("⚠️", "rgba(216,90,48,0.15)", "#F0997B", "IV rank elevated — reduce position size"))
+    if rvol > 1.2:
+        alerts.append(("⚠️", "rgba(216,90,48,0.15)", "#F0997B", f"Relative volume {rvol}× — widen stops"))
+    if session["vol_mult"] >= 1.2:
+        alerts.append(("ℹ️", "rgba(56,138,221,0.15)", "#85B7EB", f"{session['label']} is a high-vol session — signals carry more weight"))
+    if session["vol_mult"] <= 0.5:
+        alerts.append(("✅", "rgba(99,153,34,0.15)", "#97C459", "Low-vol session — reduce targets, avoid overtrading"))
+
+    if alerts:
+        cols = st.columns(len(alerts))
+        for col, (icon, bg, fg, msg) in zip(cols, alerts):
+            col.markdown(
+                f'<div style="background:{bg};color:{fg};padding:8px 12px;'
+                f'border-radius:8px;font-size:12px;border:1px solid {fg}44;">'
+                f'{icon} {msg}</div>',
+                unsafe_allow_html=True
+            )
+        st.markdown("")
+
+    # ── Signals + Levels ──────────────────────────────────────
+    col_sig, col_lvl = st.columns([1, 1])
+
+    with col_sig:
+        st.markdown("#### Signals")
+        for s in signals:
+            css   = "sig-long"  if s["dir"] == "L" else "sig-short" if s["dir"] == "S" else "sig-flat"
+            arrow = "▲ Long"    if s["dir"] == "L" else "▼ Short"   if s["dir"] == "S" else "– Flat"
+            conf_color = "#5DCAA5" if s["conf"] >= 70 else "#FAC775" if s["conf"] >= 55 else "#F0997B"
+            st.markdown(
+                f'<div class="sig-card {css}">'
+                f'<div class="sig-name">{arrow} &nbsp; {s["name"]}'
+                f'&nbsp;<span style="font-size:12px;color:{conf_color};font-weight:700;">{s["conf"]}%</span>'
+                f'&nbsp;<span style="font-size:11px;opacity:0.5;">[{s["src"]}]</span></div>'
+                f'<div class="sig-detail">{s["detail"]}</div>'
+                f'</div>',
+                unsafe_allow_html=True
+            )
+            st.progress(s["conf"] / 100)
+
+    with col_lvl:
+        st.markdown("#### Key levels")
+        tag_css = {"R": "lvl-r", "S": "lvl-s", "POC": "lvl-poc", "P": "lvl-p"}
+        rows = ""
+        for l in levels:
+            css = tag_css.get(l["tag"], "")
+            rows += (
+                f'<tr>'
+                f'<td style="padding:6px 10px;"><span class="{css}">{l["tag"]}</span></td>'
+                f'<td style="padding:6px 10px;font-variant-numeric:tabular-nums;font-weight:700;font-size:14px;">'
+                f'{l["price"]}</td>'
+                f'<td style="padding:6px 10px;font-size:12px;opacity:0.65;">{l["label"]}</td>'
+                f'</tr>'
+            )
+        st.markdown(
+            f'<table style="width:100%;border-collapse:collapse;">'
+            f'<thead><tr>'
+            f'<th style="text-align:left;font-size:11px;opacity:0.5;padding:4px 10px;font-weight:600;">Tag</th>'
+            f'<th style="text-align:left;font-size:11px;opacity:0.5;padding:4px 10px;font-weight:600;">Price</th>'
+            f'<th style="text-align:left;font-size:11px;opacity:0.5;padding:4px 10px;font-weight:600;">Level</th>'
+            f'</tr></thead><tbody>{rows}</tbody></table>',
+            unsafe_allow_html=True
+        )
+
+    st.divider()
+
+    # ── Chart + Regime ────────────────────────────────────────
+    col_chart, col_regime = st.columns([3, 1])
+
+    with col_chart:
+        st.markdown("#### Price — last 78 bars")
+        plot_df = df.iloc[-78:].copy()
+
+        tp        = (plot_df["high"] + plot_df["low"] + plot_df["close"]) / 3
+        vwap_line = (tp * plot_df["volume"]).cumsum() / plot_df["volume"].cumsum()
+        dev_line  = (tp - vwap_line).rolling(20).std()
+
+        fig = go.Figure()
+        fig.add_trace(go.Candlestick(
+            x=plot_df.index,
+            open=plot_df["open"],
+            high=plot_df["high"],
+            low=plot_df["low"],
+            close=plot_df["close"],
+            increasing_line_color="#1D9E75",
+            decreasing_line_color="#D85A30",
+            name=symbol,
+        ))
+        fig.add_trace(go.Scatter(
+            x=plot_df.index, y=vwap_line,
+            line=dict(color="#AFA9EC", width=1.5),
+            name="VWAP"
+        ))
+        fig.add_trace(go.Scatter(
+            x=plot_df.index, y=vwap_line + dev_line,
+            line=dict(color="#7F77DD", width=1, dash="dot"),
+            name="VWAP +1σ"
+        ))
+        fig.add_trace(go.Scatter(
+            x=plot_df.index, y=vwap_line - dev_line,
+            line=dict(color="#7F77DD", width=1, dash="dot"),
+            name="VWAP -1σ"
+        ))
+        fig.update_layout(
+            height=380,
+            margin=dict(l=0, r=0, t=0, b=0),
+            xaxis_rangeslider_visible=False,
+            legend=dict(
+                orientation="h", yanchor="bottom", y=1.02,
+                xanchor="left", x=0,
+                font=dict(size=11)
+            ),
+            plot_bgcolor="rgba(0,0,0,0)",
+            paper_bgcolor="rgba(0,0,0,0)",
+        )
+        st.plotly_chart(fig, use_container_width=True)
+
+    with col_regime:
+        st.markdown("#### Market regime")
+        st.markdown(
+            f'<div style="background:{regime_color}22;border:1px solid {regime_color}66;'
+            f'border-radius:10px;padding:14px 16px;margin-bottom:14px;">'
+            f'<div style="font-size:17px;font-weight:700;color:{regime_color};">{regime}</div>'
+            f'</div>',
+            unsafe_allow_html=True
+        )
+        st.markdown(
+            f'<div style="font-size:13px;opacity:0.75;line-height:1.7;">{regime_tip}</div>',
+            unsafe_allow_html=True
+        )
+
+        st.markdown("<br>", unsafe_allow_html=True)
+        st.markdown("#### Session vol rank")
+        sessions_all = [
+            ("Asia",      0.55, "asia"),
+            ("London",    0.85, "london"),
+            ("NY AM",     1.35, "ny_am"),
+            ("Lunch",     0.60, "ny_lunch"),
+            ("NY PM",     1.10, "ny_pm"),
+            ("After-hrs", 0.40, "afterhours"),
+        ]
+        for name, vm, sid i
