@@ -265,4 +265,4 @@ def render_instrument(symbol: str):
             ("NY PM",     1.10, "ny_pm"),
             ("After-hrs", 0.40, "afterhours"),
         ]
-        for name, vm, sid i
+        for name, vm, sid in sessions_all:
