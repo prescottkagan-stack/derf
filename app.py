@@ -12,7 +12,6 @@ from signal_engine import (
     classify_regime, get_signals, get_key_levels
 )
 
-# ── Page config ───────────────────────────────────────────────
 st.set_page_config(
     page_title="ES · NQ Quant Dashboard",
     page_icon="📈",
@@ -20,10 +19,8 @@ st.set_page_config(
     initial_sidebar_state="collapsed"
 )
 
-# Auto-refresh every 60 seconds
 st_autorefresh(interval=60_000, key="auto_refresh")
 
-# ── Custom CSS ────────────────────────────────────────────────
 st.markdown("""
 <style>
   .block-container { padding-top: 1rem; padding-bottom: 1rem; }
@@ -45,7 +42,6 @@ st.markdown("""
 </style>
 """, unsafe_allow_html=True)
 
-# ── Header ────────────────────────────────────────────────────
 session = get_current_session()
 et_now  = session["now"].strftime("%H:%M:%S ET")
 
@@ -62,7 +58,6 @@ with col_session:
         unsafe_allow_html=True
     )
 
-# ── Instrument tabs ───────────────────────────────────────────
 tab_es, tab_nq = st.tabs(["📊  ES — S&P 500 Futures", "📊  NQ — Nasdaq Futures"])
 
 def render_instrument(symbol: str):
@@ -77,13 +72,17 @@ def render_instrument(symbol: str):
     with st.spinner(f"Loading {symbol} data…"):
         df, quote, vix = load_data(symbol)
 
+    if df is None or len(df) < 20:
+        st.warning(f"Not enough data for {symbol} — market may be closed or data unavailable. Try again during market hours.")
+        return
+
     price    = quote["price"]
     prev_cls = quote["prev_close"]
-    chg      = round(price - prev_cls, 2)
-    chg_pct  = round(chg / prev_cls * 100, 2)
+    chg      = round(price - prev_cls, 2) if price and prev_cls else 0.0
+    chg_pct  = round(chg / prev_cls * 100, 2) if prev_cls else 0.0
     atr      = calc_atr(df)
     adj_atr  = round(atr * session["vol_mult"], 2)
-    vwap, sigma = calc_vwap_bands(df)
+    vwap, sigma     = calc_vwap_bands(df)
     rvol     = calc_rvol(df)
     ivr      = calc_ivr(vix)
     regime, regime_tip, regime_color = classify_regime(df)
@@ -92,15 +91,15 @@ def render_instrument(symbol: str):
 
     # ── Top metrics ───────────────────────────────────────────
     m1, m2, m3, m4, m5 = st.columns(5)
-    m1.metric("Last price",       f"{price:,.2f}",   f"{chg:+.2f} ({chg_pct:+.2f}%)")
-    m2.metric("Session-adj ATR",  f"{adj_atr} pts",  f"raw {atr} × {session['vol_mult']}")
-    m3.metric("VIX",              f"{vix}",           None)
-    m4.metric("IV rank",          f"{ivr}%",          "elevated" if ivr > 60 else "normal")
-    m5.metric("Rel volume",       f"{rvol}×",         "above avg" if rvol > 1.1 else "normal")
+    m1.metric("Last price",      f"{price:,.2f}",  f"{chg:+.2f} ({chg_pct:+.2f}%)")
+    m2.metric("Session-adj ATR", f"{adj_atr} pts", f"raw {atr} × {session['vol_mult']}")
+    m3.metric("VIX",             f"{vix}",          None)
+    m4.metric("IV rank",         f"{ivr}%",         "elevated" if ivr > 60 else "normal")
+    m5.metric("Rel volume",      f"{rvol}×",        "above avg" if rvol > 1.1 else "normal")
 
     st.divider()
 
-    # ── Alerts ───────────────────────────────────────────────
+    # ── Alerts ────────────────────────────────────────────────
     alerts = []
     if ivr > 60:
         alerts.append(("⚠️", "#FAEEDA", "#633806", "IV rank elevated — reduce position size"))
@@ -121,14 +120,14 @@ def render_instrument(symbol: str):
             )
         st.markdown("")
 
-    # ── Signals + Levels ─────────────────────────────────────
+    # ── Signals + Levels ──────────────────────────────────────
     col_sig, col_lvl = st.columns([1, 1])
 
     with col_sig:
         st.markdown("#### Signals")
         for s in signals:
-            css = "sig-long" if s["dir"] == "L" else "sig-short" if s["dir"] == "S" else "sig-flat"
-            arrow = "▲ Long" if s["dir"] == "L" else "▼ Short" if s["dir"] == "S" else "– Flat"
+            css   = "sig-long" if s["dir"] == "L" else "sig-short" if s["dir"] == "S" else "sig-flat"
+            arrow = "▲ Long"   if s["dir"] == "L" else "▼ Short"   if s["dir"] == "S" else "– Flat"
             conf_color = "#1D9E75" if s["conf"] >= 70 else "#BA7517" if s["conf"] >= 55 else "#993C1D"
             st.markdown(
                 f'<div class="sig-card {css}">'
@@ -170,11 +169,14 @@ def render_instrument(symbol: str):
     col_chart, col_regime = st.columns([3, 1])
 
     with col_chart:
-        st.markdown("#### Price — 5m bars (last 78 candles / ~6.5 hrs)")
+        st.markdown("#### Price — last 78 bars")
         plot_df = df.iloc[-78:].copy()
-        fig = go.Figure()
 
-        # Candlesticks
+        tp        = (plot_df["high"] + plot_df["low"] + plot_df["close"]) / 3
+        vwap_line = (tp * plot_df["volume"]).cumsum() / plot_df["volume"].cumsum()
+        dev_line  = (tp - vwap_line).rolling(20).std()
+
+        fig = go.Figure()
         fig.add_trace(go.Candlestick(
             x=plot_df.index,
             open=plot_df["open"],
@@ -185,14 +187,9 @@ def render_instrument(symbol: str):
             decreasing_line_color="#D85A30",
             name=symbol,
         ))
-
-        # VWAP line
-        tp   = (plot_df["high"] + plot_df["low"] + plot_df["close"]) / 3
-        vwap_line = (tp * plot_df["volume"]).cumsum() / plot_df["volume"].cumsum()
-        dev_line  = (tp - vwap_line).rolling(20).std()
         fig.add_trace(go.Scatter(
             x=plot_df.index, y=vwap_line,
-            line=dict(color="#7F77DD", width=1.5, dash="solid"),
+            line=dict(color="#7F77DD", width=1.5),
             name="VWAP"
         ))
         fig.add_trace(go.Scatter(
@@ -205,7 +202,6 @@ def render_instrument(symbol: str):
             line=dict(color="#AFA9EC", width=1, dash="dot"),
             name="VWAP -1σ"
         ))
-
         fig.update_layout(
             height=360,
             margin=dict(l=0, r=0, t=0, b=0),
@@ -225,18 +221,25 @@ def render_instrument(symbol: str):
             f'</div>',
             unsafe_allow_html=True
         )
-        st.markdown(f'<div style="font-size:13px;color:#555;line-height:1.6;">{regime_tip}</div>', unsafe_allow_html=True)
+        st.markdown(
+            f'<div style="font-size:13px;color:#555;line-height:1.6;">{regime_tip}</div>',
+            unsafe_allow_html=True
+        )
 
         st.markdown("<br>", unsafe_allow_html=True)
         st.markdown("#### Session vol rank")
         sessions_all = [
-            ("Asia", 0.55), ("London", 0.85), ("NY AM", 1.35),
-            ("Lunch", 0.60), ("NY PM", 1.10), ("After-hrs", 0.40)
+            ("Asia",      0.55, "asia"),
+            ("London",    0.85, "london"),
+            ("NY AM",     1.35, "ny_am"),
+            ("Lunch",     0.60, "ny_lunch"),
+            ("NY PM",     1.10, "ny_pm"),
+            ("After-hrs", 0.40, "afterhours"),
         ]
-        for name, vm in sessions_all:
-            is_current = name.lower().replace(" ", "_") in session["id"] or session["label"].startswith(name.split()[0])
-            pct = int(vm / 1.35 * 100)
-            color = session["color"] if is_current else "#D3D1C7"
+        for name, vm, sid in sessions_all:
+            is_current = sid == session["id"]
+            pct    = int(vm / 1.35 * 100)
+            color  = session["color"] if is_current else "#D3D1C7"
             weight = "700" if is_current else "400"
             st.markdown(
                 f'<div style="margin-bottom:5px;">'
@@ -248,7 +251,7 @@ def render_instrument(symbol: str):
                 unsafe_allow_html=True
             )
 
-    # ── Session heatmap ───────────────────────────────────────
+    # ── Heatmap ───────────────────────────────────────────────
     st.divider()
     st.markdown("#### Intraday edge heatmap — signal type × session")
 
@@ -271,7 +274,7 @@ def render_instrument(symbol: str):
         return "background-color:#F1EFE8;color:#444441"
 
     st.dataframe(
-        heat_df.style.applymap(color_heat).format("{}%"),
+        heat_df.style.map(color_heat).format("{}%"),
         use_container_width=True,
         height=252
     )
