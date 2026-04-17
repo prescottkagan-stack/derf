@@ -7,23 +7,45 @@ TICKERS = {"ES": "ES=F", "NQ": "NQ=F", "VIX": "^VIX"}
 
 def get_bars(symbol: str, period="5d", interval="5m") -> pd.DataFrame:
     ticker = TICKERS.get(symbol, symbol)
-    df = yf.download(ticker, period=period, interval=interval, progress=False, auto_adjust=True)
-    df.columns = [c[0].lower() if isinstance(c, tuple) else c.lower() for c in df.columns]
+    df = yf.download(ticker, period=period, interval=interval,
+                     progress=False, auto_adjust=True)
+
+    if isinstance(df.columns, pd.MultiIndex):
+        df.columns = [c[0].lower() for c in df.columns]
+    else:
+        df.columns = [c.lower() for c in df.columns]
+
     df = df.dropna()
+
+    if len(df) < 20:
+        df = yf.download(ticker, period="60d", interval="1d",
+                         progress=False, auto_adjust=True)
+        if isinstance(df.columns, pd.MultiIndex):
+            df.columns = [c[0].lower() for c in df.columns]
+        else:
+            df.columns = [c.lower() for c in df.columns]
+        df = df.dropna()
+
     return df
 
 def get_quote(symbol: str) -> dict:
     ticker = TICKERS.get(symbol, symbol)
-    t = yf.Ticker(ticker)
-    info = t.fast_info
-    return {
-        "price": round(info.last_price, 2),
-        "prev_close": round(info.previous_close, 2),
-    }
+    try:
+        t = yf.Ticker(ticker)
+        info = t.fast_info
+        return {
+            "price": round(float(info.last_price), 2),
+            "prev_close": round(float(info.previous_close), 2),
+        }
+    except Exception:
+        return {"price": 0.0, "prev_close": 0.0}
 
 def get_vix() -> float:
-    t = yf.Ticker("^VIX")
-    return round(t.fast_info.last_price, 2)
+    try:
+        t = yf.Ticker("^VIX")
+        return round(float(t.fast_info.last_price), 2)
+    except Exception:
+        return 0.0
 
 def get_current_session() -> dict:
     now = datetime.now(pytz.timezone("America/New_York"))
